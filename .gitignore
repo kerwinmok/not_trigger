@@ -1,0 +1,21 @@
+# User-specific, generated at runtime - config.example.json is the template
+config.json
+config.json.tmp
+not_trigger.log
+not_trigger.log.*
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# Editor/OS cruft
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

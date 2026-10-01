@@ -1,0 +1,38 @@
+{
+  "camera_index": 0,
+  "camera_name": "Example USB Camera",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "brightness": null,
+  "contrast": null,
+  "saturation": null,
+  "exposure": null,
+  "roi": {
+    "x": 820,
+    "y": 440,
+    "w": 240,
+    "h": 180
+  },
+  "target_color": {
+    "h": 0,
+    "s": 180,
+    "v": 170,
+    "h_tolerance": 12,
+    "s_tolerance": 60,
+    "v_tolerance": 60,
+    "has_sample": true
+  },
+  "match_threshold": 0.35,
+  "confirm_frames": 3,
+  "cooldown_ms": 400,
+  "action": {
+    "kind": "key",
+    "value": "f5",
+    "is_special_key": true,
+    "label": "Key: f5"
+  },
+  "preview_mode": "cheap",
+  "buffer_size": 1,
+  "window_geometry": ""
+}

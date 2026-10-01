@@ -1,0 +1,14 @@
+# Tested against opencv-python 4.13, numpy 2.4, pillow 12.1, pynput 1.8.
+# Ranges below avoid an untested major-version jump (e.g. opencv-python 5.x)
+# while still picking up patch/minor fixes.
+opencv-python>=4.9,<5
+numpy>=1.26,<3
+pillow>=10,<13
+pynput>=1.7,<2
+
+# DirectShow device-name enumeration. Windows-only by design (this app's
+# target platform); the marker keeps `pip install -r requirements.txt`
+# from failing on another OS during development.
+pygrabber>=0.1; platform_system == "Windows"
+
+# Optional, for running the test suite (tests/): pip install pytest
