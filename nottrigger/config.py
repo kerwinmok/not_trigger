@@ -34,6 +34,14 @@ class TargetColor:
     s_tolerance: int = 60
     v_tolerance: int = 60
     has_sample: bool = False  # False until the user has actually sampled a color
+    samples: list[SampledColor] = field(default_factory=list)
+
+
+@dataclass
+class SampledColor:
+    h: int = 0
+    s: int = 0
+    v: int = 0
 
 
 @dataclass
@@ -135,6 +143,11 @@ class AppConfig:
         if cfg.roi.shape not in ("rectangle", "circle", "point"):
             cfg.roi.shape = "rectangle"
         cfg.roi.radius = min(300, max(1, cfg.roi.radius))
+        if not cfg.target_color.samples and cfg.target_color.has_sample:
+            cfg.target_color.samples = [
+                SampledColor(cfg.target_color.h, cfg.target_color.s, cfg.target_color.v)
+            ]
+        cfg.target_color.has_sample = bool(cfg.target_color.samples)
         return cfg
 
 
@@ -145,11 +158,32 @@ def _safe_nested(cls: type, value: Any):
     instance = cls()
     for f in fields(cls):
         if f.name in value:
+            if cls is TargetColor and f.name == "samples":
+                instance.samples = _safe_color_samples(value[f.name])
+                continue
             try:
                 setattr(instance, f.name, _coerce(value[f.name], getattr(instance, f.name)))
             except (TypeError, ValueError):
                 pass  # keep the default for this one field
     return instance
+
+
+def _safe_color_samples(value: Any) -> list[SampledColor]:
+    if not isinstance(value, list):
+        return []
+    samples = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            h, s, v = (int(entry[key]) for key in ("h", "s", "v"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0 <= h <= 179 and 0 <= s <= 255 and 0 <= v <= 255:
+            sample = SampledColor(h, s, v)
+            if sample not in samples:
+                samples.append(sample)
+    return samples
 
 
 def _coerce(value: Any, default: Any) -> Any:

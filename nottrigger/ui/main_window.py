@@ -11,7 +11,14 @@ from tkinter import messagebox, ttk
 
 from nottrigger.actions import ActionRecorder
 from nottrigger.camera import CameraSettings, CameraWorker, FrameResult, list_cameras
-from nottrigger.config import AppConfig, RegionOfInterest, TargetColor, load_config, save_config
+from nottrigger.config import (
+    AppConfig,
+    RegionOfInterest,
+    SampledColor,
+    TargetColor,
+    load_config,
+    save_config,
+)
 from nottrigger.constants import (
     CONFIG_SAVE_DEBOUNCE_MS,
     STATS_WINDOW_DISPATCH,
@@ -343,18 +350,37 @@ class MainWindow:
     # ------------------------------------------------------------------
 
     def _build_color_section(self, parent: tk.Widget, number: int) -> None:
-        section = Section(parent, number, "Target color & sensitivity", self.fonts)
+        section = Section(parent, number, "Target colors & sensitivity", self.fonts)
         section.pack(fill="x", pady=(0, 10))
 
         swatch_row = ttk.Frame(section.body, style="Panel.TFrame")
         swatch_row.pack(fill="x")
         self._color_swatch = tk.Canvas(swatch_row, width=28, height=28, highlightthickness=1, highlightbackground=theme.BORDER)
         self._color_swatch.pack(side="left")
-        self._color_label = ttk.Label(swatch_row, text="No color sampled", style="Body.TLabel")
+        self._color_label = ttk.Label(swatch_row, text="No colors sampled", style="Body.TLabel")
         self._color_label.pack(side="left", padx=8)
-        sample_btn = ttk.Button(swatch_row, text="Sample color", style="Ghost.TButton", command=self._start_color_sampling)
+        sample_btn = ttk.Button(swatch_row, text="Add color", style="Ghost.TButton", command=self._start_color_sampling)
         sample_btn.pack(side="right")
-        add_help(sample_btn, "Start the camera, click this, then select the color in the preview.")
+        add_help(sample_btn, "Start the camera, click this, then click a target color in the preview. Repeat to add more colors.")
+
+        self._sampled_colors_list = tk.Listbox(
+            section.body,
+            height=3,
+            exportselection=False,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=theme.BORDER,
+            font=("Consolas", 9),
+        )
+        self._sampled_colors_list.pack(fill="x", pady=(6, 2))
+        self._sampled_colors_list.bind("<<ListboxSelect>>", self._on_sampled_color_selected)
+        remove_color_btn = ttk.Button(
+            section.body,
+            text="Remove selected color",
+            style="Ghost.TButton",
+            command=self._remove_sampled_color,
+        )
+        remove_color_btn.pack(anchor="e", pady=(0, 4))
         self._refresh_color_swatch()
 
         for key, label in (("h_tolerance", "Hue tolerance"), ("s_tolerance", "Saturation tolerance"), ("v_tolerance", "Brightness tolerance")):
@@ -363,6 +389,11 @@ class MainWindow:
                 self.fonts, on_change=lambda v, k=key: self._on_tolerance_changed(k, v),
             )
             slider.pack(fill="x", pady=4)
+        ttk.Label(
+            section.body,
+            text="These tolerances apply to every sampled color.",
+            style="Muted.TLabel",
+        ).pack(anchor="w")
 
         self._threshold_slider = LabeledSlider(
             section.body, "Match threshold", 5, 100, self.config.match_threshold * 100, self.fonts,
@@ -382,20 +413,69 @@ class MainWindow:
         self._color_label.configure(text="Click the target color in the preview...")
 
     def _on_color_sampled(self, h: int, s: int, v: int) -> None:
+        sample = SampledColor(h, s, v)
+        if sample not in self.config.target_color.samples:
+            self.config.target_color.samples.append(sample)
         self.config.target_color.h, self.config.target_color.s, self.config.target_color.v = h, s, v
-        self.config.target_color.has_sample = True
+        self.config.target_color.has_sample = bool(self.config.target_color.samples)
         self._refresh_color_swatch()
+        if self.config.target_color.samples:
+            self._sampled_colors_list.selection_clear(0, tk.END)
+            self._sampled_colors_list.selection_set(len(self.config.target_color.samples) - 1)
         self._schedule_save()
         self._reset_detector_if_running()
 
     def _refresh_color_swatch(self) -> None:
         tc = self.config.target_color
-        if tc.has_sample:
-            self._color_swatch.configure(bg=hsv_to_hex(tc))
-            self._color_label.configure(text=f"H {tc.h}  S {tc.s}  V {tc.v}")
+        samples = tc.samples or ([SampledColor(tc.h, tc.s, tc.v)] if tc.has_sample else [])
+        self._sampled_colors_list.delete(0, tk.END)
+        for index, sample in enumerate(samples, start=1):
+            self._sampled_colors_list.insert(
+                tk.END,
+                f"{index}. H {sample.h:3d}  S {sample.s:3d}  V {sample.v:3d}",
+            )
+        if samples:
+            self._color_swatch.configure(bg=hsv_to_hex(samples[0]))
+            self._color_label.configure(text=f"{len(samples)} target color{'s' if len(samples) != 1 else ''}")
+            if not self._sampled_colors_list.curselection():
+                self._sampled_colors_list.selection_set(0)
         else:
             self._color_swatch.configure(bg=theme.PANEL_BG)
-            self._color_label.configure(text="No color sampled")
+            self._color_label.configure(text="No colors sampled")
+
+    def _on_sampled_color_selected(self, _event=None) -> None:
+        samples = self.config.target_color.samples or (
+            [SampledColor(self.config.target_color.h, self.config.target_color.s, self.config.target_color.v)]
+            if self.config.target_color.has_sample
+            else []
+        )
+        selection = self._sampled_colors_list.curselection()
+        if selection:
+            self._color_swatch.configure(bg=hsv_to_hex(samples[selection[0]]))
+
+    def _remove_sampled_color(self) -> None:
+        selection = self._sampled_colors_list.curselection()
+        if not selection:
+            return
+        if not self.config.target_color.samples and self.config.target_color.has_sample:
+            self.config.target_color.samples = [
+                SampledColor(
+                    self.config.target_color.h,
+                    self.config.target_color.s,
+                    self.config.target_color.v,
+                )
+            ]
+        index = selection[0]
+        del self.config.target_color.samples[index]
+        self.config.target_color.has_sample = bool(self.config.target_color.samples)
+        if self.config.target_color.samples:
+            first = self.config.target_color.samples[0]
+            self.config.target_color.h, self.config.target_color.s, self.config.target_color.v = first.h, first.s, first.v
+        self._refresh_color_swatch()
+        if self.config.target_color.samples:
+            self._sampled_colors_list.selection_set(min(index, len(self.config.target_color.samples) - 1))
+        self._schedule_save()
+        self._reset_detector_if_running()
 
     def _on_tolerance_changed(self, key: str, value: float) -> None:
         setattr(self.config.target_color, key, int(value))

@@ -10,12 +10,12 @@ A small Windows app that watches a webcam region for a color and sends a keyboar
 
 1. Choose your camera and click **Start**. It opens at the camera's default resolution and frame rate.
 2. Choose a region shape. Drag a rectangle, click a point, or set a circle radius and click its center.
-3. Select **Sample color**, then click the color to watch in the preview.
+3. Click **Add color**, then click a target color in the preview. Repeat for each product color you want to accept. The listed colors are matched separately, so colors between your samples are not included.
 4. Click **Record action**, then press the key or mouse button to send. A left click is saved as **Mouse: LMB**.
 
 The latency estimate uses recent camera frame timing and the app's detection and action time. It does not include the camera's full sensor-to-screen delay. **Preview** turns off preview processing while detection continues. **Low CPU preview** updates a smaller preview less often. The FPS override is optional; leave it blank to use the camera default. Resolution always stays at the camera default.
 
-Type a number into any slider's value field for a precise setting, or drag the slider.
+Type a number into any slider's value field for a precise setting, or drag the slider. Color tolerances apply to all sampled colors.
 
 Recorded mouse actions are sent through Windows as system mouse input at the current pointer position. They are not DOM clicks, though Windows marks software-generated input as injected.
 

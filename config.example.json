@@ -19,7 +19,10 @@
     "h_tolerance": 12,
     "s_tolerance": 60,
     "v_tolerance": 60,
-    "has_sample": true
+    "has_sample": true,
+    "samples": [
+      { "h": 0, "s": 180, "v": 170 }
+    ]
   },
   "match_threshold": 0.35,
   "confirm_frames": 3,

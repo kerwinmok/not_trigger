@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import cv2
 
-from nottrigger.config import RegionOfInterest, TargetColor
+from nottrigger.config import RegionOfInterest, SampledColor, TargetColor
 from nottrigger.detection import (
     Detector,
     EdgeTriggerState,
@@ -65,6 +65,32 @@ def test_match_ratio_half_in_range():
     hsv[..., 2] = 150
     bounds = [(np.array([40, 100, 100], dtype=np.uint8), np.array([60, 200, 200], dtype=np.uint8))]
     assert match_ratio(hsv, bounds) == pytest.approx(0.5)
+
+
+def test_multiple_distant_samples_match_without_matching_colors_between():
+    hsv = np.array(
+        [[[0, 255, 255], [60, 255, 255], [120, 255, 255]]],
+        dtype=np.uint8,
+    )
+    frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    target = TargetColor(
+        samples=[SampledColor(0, 255, 255), SampledColor(120, 255, 255)],
+        h_tolerance=8,
+        s_tolerance=20,
+        v_tolerance=20,
+    )
+
+    result = Detector().update(
+        frame,
+        RegionOfInterest(x=0, y=0, w=3, h=1),
+        target,
+        match_threshold=0.6,
+        confirm_frames=1,
+        cooldown_ms=0,
+    )
+
+    assert result.match_ratio == pytest.approx(2 / 3)
+    assert result.should_fire is True
 
 
 def test_circle_match_ratio_ignores_pixels_outside_circle():

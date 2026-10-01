@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from nottrigger.config import RegionOfInterest, TargetColor
+from nottrigger.config import RegionOfInterest, SampledColor, TargetColor
 
 HUE_MAX = 179  # OpenCV hue range is 0-179, not 0-359
 
@@ -78,17 +78,44 @@ def compute_hsv_bounds(target: TargetColor) -> list[tuple[np.ndarray, np.ndarray
     ]
 
 
+def compute_sampled_hsv_bounds(target: TargetColor) -> list[list[tuple[np.ndarray, np.ndarray]]]:
+    """Build independent HSV ranges for every sampled color."""
+    samples = target.samples or (
+        [SampledColor(target.h, target.s, target.v)] if target.has_sample else []
+    )
+    bounds = []
+    for sample in samples:
+        sample_target = TargetColor(
+            h=sample.h,
+            s=sample.s,
+            v=sample.v,
+            h_tolerance=target.h_tolerance,
+            s_tolerance=target.s_tolerance,
+            v_tolerance=target.v_tolerance,
+            has_sample=True,
+        )
+        bounds.append(compute_hsv_bounds(sample_target))
+    return bounds
+
+
 def match_ratio(
     hsv_roi: np.ndarray,
-    bounds: list[tuple[np.ndarray, np.ndarray]],
+    bounds: list[tuple[np.ndarray, np.ndarray]] | list[list[tuple[np.ndarray, np.ndarray]]],
     region_mask: np.ndarray | None = None,
 ) -> float:
     """Fraction (0..1) of ROI pixels that fall in any of the HSV bounds."""
     if hsv_roi.size == 0 or not bounds:
         return 0.0
-    match_mask = cv2.inRange(hsv_roi, bounds[0][0], bounds[0][1])
-    for lo, hi in bounds[1:]:
-        match_mask = cv2.bitwise_or(match_mask, cv2.inRange(hsv_roi, lo, hi))
+    if isinstance(bounds[0], tuple):
+        sample_bounds = [bounds]
+    else:
+        sample_bounds = bounds
+    match_mask = np.zeros(hsv_roi.shape[:2], dtype=np.uint8)
+    for color_bounds in sample_bounds:
+        color_mask = cv2.inRange(hsv_roi, color_bounds[0][0], color_bounds[0][1])
+        for lo, hi in color_bounds[1:]:
+            color_mask = cv2.bitwise_or(color_mask, cv2.inRange(hsv_roi, lo, hi))
+        match_mask = cv2.bitwise_or(match_mask, color_mask)
     if region_mask is None:
         return float(cv2.countNonZero(match_mask)) / float(match_mask.size)
     area = cv2.countNonZero(region_mask)
@@ -167,7 +194,7 @@ class Detector:
         frame_h, frame_w = frame_bgr.shape[:2]
         used_roi = clamp_roi_to_frame(roi, frame_w, frame_h)
 
-        if used_roi.is_empty() or not target.has_sample:
+        if used_roi.is_empty() or not (target.samples or target.has_sample):
             processing_ms = (time.perf_counter() - t0) * 1000.0
             return DetectionResult(0.0, False, False, processing_ms, used_roi)
 
@@ -192,7 +219,7 @@ class Detector:
                 used_roi.x : used_roi.x + used_roi.w,
             ]
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        bounds = compute_hsv_bounds(target)
+        bounds = compute_sampled_hsv_bounds(target)
         ratio = match_ratio(hsv, bounds, region_mask)
         is_match = ratio >= match_threshold
 

@@ -1,6 +1,6 @@
 import json
 
-from nottrigger.config import AppConfig, load_config, save_config
+from nottrigger.config import AppConfig, SampledColor, load_config, save_config
 
 
 def test_round_trip(tmp_path):
@@ -11,6 +11,10 @@ def test_round_trip(tmp_path):
     cfg.roi.shape = "circle"
     cfg.roi.radius = 42
     cfg.target_color.h, cfg.target_color.has_sample = 5, True
+    cfg.target_color.samples = [
+        SampledColor(5, 200, 180),
+        SampledColor(120, 180, 200),
+    ]
     save_config(path, cfg)
 
     loaded = load_config(path)
@@ -19,6 +23,49 @@ def test_round_trip(tmp_path):
     assert loaded.roi.shape == "circle" and loaded.roi.radius == 42
     assert loaded.target_color.h == 5
     assert loaded.target_color.has_sample is True
+    assert [(sample.h, sample.s, sample.v) for sample in loaded.target_color.samples] == [
+        (5, 200, 180),
+        (120, 180, 200),
+    ]
+
+
+def test_legacy_single_sample_is_migrated_to_sample_list(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"target_color": {"h": 15, "s": 190, "v": 210, "has_sample": True}}),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(path)
+
+    assert [(sample.h, sample.s, sample.v) for sample in cfg.target_color.samples] == [
+        (15, 190, 210)
+    ]
+
+
+def test_invalid_color_samples_are_ignored(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "target_color": {
+                    "samples": [
+                        {"h": 20, "s": 180, "v": 190},
+                        {"h": 200, "s": 180, "v": 190},
+                        {"h": "bad", "s": 180, "v": 190},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(path)
+
+    assert [(sample.h, sample.s, sample.v) for sample in cfg.target_color.samples] == [
+        (20, 180, 190)
+    ]
+    assert cfg.target_color.has_sample is True
 
 
 def test_missing_file_returns_defaults(tmp_path):
