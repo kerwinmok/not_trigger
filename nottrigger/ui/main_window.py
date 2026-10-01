@@ -366,7 +366,7 @@ class MainWindow:
 
         self._threshold_slider = LabeledSlider(
             section.body, "Match threshold", 5, 100, self.config.match_threshold * 100, self.fonts,
-            on_change=self._on_threshold_changed, value_format="{:.0f}%",
+            on_change=self._on_threshold_changed, value_format="{:.1f}%", resolution=0.1,
         )
         self._threshold_slider.pack(fill="x", pady=4)
         add_help(self._threshold_slider, "How much of the region must match the target color before it counts as a hit.")

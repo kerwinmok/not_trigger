@@ -3,10 +3,28 @@
 from __future__ import annotations
 
 import tkinter as tk
+import math
 from tkinter import ttk
 from typing import Callable
 
 from nottrigger.ui import theme
+
+
+def normalize_numeric_entry(
+    value: str,
+    lower: float,
+    upper: float,
+    resolution: float = 1.0,
+) -> float | None:
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    if not math.isfinite(number) or not math.isfinite(resolution) or resolution <= 0:
+        return None
+    number = min(upper, max(lower, number))
+    digits = max(0, len(f"{resolution:.10f}".rstrip("0").split(".")[-1]))
+    return round(lower + round((number - lower) / resolution) * resolution, digits)
 
 
 class ToolTip:
@@ -115,17 +133,26 @@ class LabeledSlider(ttk.Frame):
         fonts: dict,
         on_change: Callable[[float], None] | None = None,
         value_format: str = "{:.0f}",
+        resolution: float = 1.0,
         **kwargs,
     ) -> None:
         super().__init__(parent, style="Panel.TFrame", **kwargs)
-        self._format = value_format
         self._on_change = on_change
+        self._lower = float(from_)
+        self._upper = float(to)
+        self._resolution = resolution
 
         top = ttk.Frame(self, style="Panel.TFrame")
         top.pack(fill="x")
         ttk.Label(top, text=label, style="Body.TLabel").pack(side="left")
-        self._value_label = ttk.Label(top, text=self._format.format(value), style="Muted.TLabel")
-        self._value_label.pack(side="right")
+        self._entry_var = tk.StringVar(value=self._entry_text(value))
+        unit = value_format.partition("}")[2].strip()
+        if unit:
+            ttk.Label(top, text=unit, style="Muted.TLabel").pack(side="right", padx=(0, 5))
+        self._entry = ttk.Entry(top, textvariable=self._entry_var, width=8, justify="right")
+        self._entry.pack(side="right")
+        self._entry.bind("<Return>", self._commit_entry)
+        self._entry.bind("<FocusOut>", self._commit_entry)
 
         self._var = tk.DoubleVar(value=value)
         self._scale = ttk.Scale(
@@ -134,17 +161,42 @@ class LabeledSlider(ttk.Frame):
         self._scale.pack(fill="x", pady=(2, 0))
 
     def _handle_change(self, _value: str) -> None:
-        value = self._var.get()
-        self._value_label.configure(text=self._format.format(value))
+        value = normalize_numeric_entry(
+            self._entry_text(self._var.get()), self._lower, self._upper, self._resolution
+        )
+        if value is None:
+            return
+        self._var.set(value)
+        self._entry_var.set(self._entry_text(value))
         if self._on_change:
             self._on_change(value)
+
+    def _commit_entry(self, _event=None) -> None:
+        value = normalize_numeric_entry(
+            self._entry_var.get(), self._lower, self._upper, self._resolution
+        )
+        if value is None:
+            value = self._var.get()
+        self._var.set(value)
+        self._entry_var.set(self._entry_text(value))
+        if self._on_change:
+            self._on_change(value)
+
+    @staticmethod
+    def _entry_text(value: float) -> str:
+        return f"{value:g}"
 
     def get(self) -> float:
         return self._var.get()
 
     def set(self, value: float) -> None:
+        value = normalize_numeric_entry(
+            self._entry_text(value), self._lower, self._upper, self._resolution
+        )
+        if value is None:
+            return
         self._var.set(value)
-        self._value_label.configure(text=self._format.format(value))
+        self._entry_var.set(self._entry_text(value))
 
 
 class StatRow(ttk.Frame):

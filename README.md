@@ -15,6 +15,8 @@ A small Windows app that watches a webcam region for a color and sends a keyboar
 
 The latency estimate uses recent camera frame timing and the app's detection and action time. It does not include the camera's full sensor-to-screen delay. **Preview** turns off preview processing while detection continues. **Low CPU preview** updates a smaller preview less often. The FPS override is optional; leave it blank to use the camera default. Resolution always stays at the camera default.
 
+Type a number into any slider's value field for a precise setting, or drag the slider.
+
 Recorded mouse actions are sent through Windows as system mouse input at the current pointer position. They are not DOM clicks, though Windows marks software-generated input as injected.
 
 ## Run From Source
