@@ -60,6 +60,10 @@ class PreviewCanvas(tk.Canvas):
         self.bind("<B1-Motion>", self._on_drag)
         self.bind("<ButtonRelease-1>", self._on_release)
         self._show_placeholder("Waiting for camera...")
+        self._latency_bg_item = self.create_rectangle(0, 0, 1, 1, fill="#22261F", outline="", state="hidden")
+        self._latency_item = self.create_text(
+            0, 0, text="", anchor="ne", fill="#FFFFFF", font=("Segoe UI", 10, "bold"), state="hidden"
+        )
 
     # -- public API ------------------------------------------------------
 
@@ -81,9 +85,14 @@ class PreviewCanvas(tk.Canvas):
         self._preview_scale = preview_scale if preview_scale > 0 else 1.0
         self._render()
 
-    def show_disabled(self) -> None:
-        self._preview_array = None
-        self._show_placeholder("Preview off - detection is still running")
+    def set_latency(self, text: str | None) -> None:
+        if text is None:
+            self.itemconfigure(self._latency_bg_item, state="hidden")
+            self.itemconfigure(self._latency_item, state="hidden")
+            return
+        self.itemconfigure(self._latency_item, text=text, state="normal")
+        self.itemconfigure(self._latency_bg_item, state="normal")
+        self._position_latency()
 
     # -- rendering ---------------------------------------------------------
 
@@ -119,6 +128,22 @@ class PreviewCanvas(tk.Canvas):
         self.tag_lower(self._image_item)
 
         self._redraw_roi()
+        self._position_latency()
+
+    def _position_latency(self) -> None:
+        width = max(self.winfo_width(), 1)
+        self.coords(self._latency_item, width - 12, 12)
+        bounds = self.bbox(self._latency_item)
+        if bounds is not None:
+            self.coords(
+                self._latency_bg_item,
+                bounds[0] - 10,
+                bounds[1] - 6,
+                bounds[2] + 10,
+                bounds[3] + 6,
+            )
+        self.tag_raise(self._latency_bg_item)
+        self.tag_raise(self._latency_item)
 
     def _show_placeholder(self, text: str) -> None:
         if self._placeholder_item is None:

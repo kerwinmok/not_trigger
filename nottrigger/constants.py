@@ -22,27 +22,9 @@ RESOLUTION_PRESETS: list[tuple[str, int, int]] = [
 
 FPS_PRESETS: list[int] = [15, 24, 30, 60]
 
-# Preview rendering cost tiers. "off" skips frame copy/resize/PhotoImage
-# work entirely; "cheap" throttles + downscales; "full" renders every
-# available frame at native size (clamped to a sane max canvas width).
-PREVIEW_MODES: list[str] = ["off", "cheap", "full"]
-PREVIEW_MODE_LABELS: dict[str, str] = {
-    "off": "Off (fastest)",
-    "cheap": "Cheap (throttled, downscaled)",
-    "full": "Full (every frame)",
-}
-DEFAULT_PREVIEW_MODE = "cheap"
-
-# "cheap" preview tuning: cap the redraw rate and the rendered width
-# regardless of how fast the camera is actually feeding frames.
+# Keep preview work small regardless of camera resolution and frame rate.
 CHEAP_PREVIEW_FPS = 12
 CHEAP_PREVIEW_MAX_WIDTH = 480
-
-# "full" preview still clamps to this width so a 4K frame doesn't force a
-# full-resolution PIL/Tk conversion every frame; native frames above this
-# width are downscaled for display only (detection always runs on the
-# native-resolution frame, never the preview copy).
-FULL_PREVIEW_MAX_WIDTH = 960
 
 # UI polls the camera worker for new stats/preview frames on this cadence,
 # independent of camera fps.

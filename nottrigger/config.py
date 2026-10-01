@@ -17,8 +17,6 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-from nottrigger.constants import DEFAULT_PREVIEW_MODE
-
 logger = logging.getLogger(__name__)
 
 
@@ -92,8 +90,7 @@ class AppConfig:
     # Action
     action: TriggerAction = field(default_factory=TriggerAction)
 
-    # Performance / preview
-    preview_mode: str = DEFAULT_PREVIEW_MODE
+    # Camera capture
     buffer_size: int = 1
 
     # Window

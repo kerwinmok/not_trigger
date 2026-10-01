@@ -5,10 +5,8 @@ Performance design, in one place because it matters for the whole app:
   - Detection always runs on the full-resolution frame the camera just
     produced, in this worker thread, at whatever rate the camera can
     sustain. It never waits on the UI.
-  - A preview frame is only prepared (resized, color-converted) when
-    preview is enabled, and "cheap" mode throttles that work to a fixed
-    small rate independent of capture fps. "off" mode skips it
-    completely - no copy, no resize, nothing extra per frame.
+    - A small preview is resized and color-converted at a fixed low rate,
+        independent of capture fps.
   - The UI thread never touches cv2.VideoCapture and the camera thread
     never touches Tkinter; they hand off through LatestBox, a tiny
     single-slot box (not a growing queue) so the UI always sees the
@@ -32,7 +30,6 @@ from nottrigger.config import RegionOfInterest, TargetColor, TriggerAction
 from nottrigger.constants import (
     CHEAP_PREVIEW_FPS,
     CHEAP_PREVIEW_MAX_WIDTH,
-    FULL_PREVIEW_MAX_WIDTH,
 )
 from nottrigger.detection import Detector
 
@@ -171,8 +168,6 @@ class CameraWorker(threading.Thread):
         self._dispatcher = ActionDispatcher()
 
         self.results = LatestBox()  # FrameResult, consumed by the UI
-        self._preview_mode = "cheap"
-        self._preview_lock = threading.Lock()
         self._last_preview_emit = 0.0
 
         self.actual_width = 0
@@ -181,14 +176,6 @@ class CameraWorker(threading.Thread):
 
         self._adjustments_lock = threading.Lock()
         self._pending_adjustments: dict[str, float] = {}
-
-    def set_preview_mode(self, mode: str) -> None:
-        with self._preview_lock:
-            self._preview_mode = mode
-
-    def _get_preview_mode(self) -> str:
-        with self._preview_lock:
-            return self._preview_mode
 
     def apply_pending_adjustment(self, key: str, value: float) -> None:
         """Queue a brightness/contrast/saturation/exposure change.
@@ -326,26 +313,20 @@ class CameraWorker(threading.Thread):
             )
 
     def _maybe_build_preview(self, frame_bgr: np.ndarray, now: float) -> tuple[np.ndarray | None, float]:
-        mode = self._get_preview_mode()
-        if mode == "off":
+        min_interval = 1.0 / CHEAP_PREVIEW_FPS
+        if now - self._last_preview_emit < min_interval:
             return None, 1.0
-
-        if mode == "cheap":
-            min_interval = 1.0 / CHEAP_PREVIEW_FPS
-            if now - self._last_preview_emit < min_interval:
-                return None, 1.0
-            max_width = CHEAP_PREVIEW_MAX_WIDTH
-        else:  # "full"
-            max_width = FULL_PREVIEW_MAX_WIDTH
 
         self._last_preview_emit = now
 
         h, w = frame_bgr.shape[:2]
         scale = 1.0
-        if w > max_width:
-            scale = max_width / w
+        if w > CHEAP_PREVIEW_MAX_WIDTH:
+            scale = CHEAP_PREVIEW_MAX_WIDTH / w
             frame_bgr = cv2.resize(
-                frame_bgr, (max_width, max(1, round(h * scale))), interpolation=cv2.INTER_AREA
+                frame_bgr,
+                (CHEAP_PREVIEW_MAX_WIDTH, max(1, round(h * scale))),
+                interpolation=cv2.INTER_AREA,
             )
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         return rgb, scale

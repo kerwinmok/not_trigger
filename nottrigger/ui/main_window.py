@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import colorsys
 import logging
 import time
 import tkinter as tk
@@ -10,21 +11,18 @@ from tkinter import messagebox, ttk
 
 from nottrigger.actions import ActionRecorder
 from nottrigger.camera import CameraSettings, CameraWorker, FrameResult, list_cameras
-from nottrigger.config import AppConfig, load_config, save_config
+from nottrigger.config import AppConfig, TargetColor, load_config, save_config
 from nottrigger.constants import (
     CONFIG_SAVE_DEBOUNCE_MS,
     FPS_PRESETS,
-    PREVIEW_MODE_LABELS,
-    PREVIEW_MODES,
     RESOLUTION_PRESETS,
     STATS_WINDOW_DISPATCH,
     STATS_WINDOW_FRAME_INTERVAL,
     STATS_WINDOW_PROCESSING,
     UI_POLL_INTERVAL_MS,
 )
-from nottrigger.latency import ModeComparison, RollingStat, compare_modes, estimate_pipeline
+from nottrigger.latency import RollingStat, estimate_pipeline
 from nottrigger.ui import theme
-from nottrigger.ui.calibration import CalibrationWindow, hsv_to_hex
 from nottrigger.ui.preview import PreviewCanvas
 from nottrigger.ui.widgets import LabeledSlider, Section, StatRow, StatusPill, VScrollFrame, add_help
 
@@ -32,13 +30,14 @@ logger = logging.getLogger(__name__)
 
 FIRED_DWELL_S = 0.5  # keep the "Fired" status visible this long so it's actually visible
 
-# The three configurations the user most often wants compared, shown
-# exactly as asked: 1080p30, 1080p60, and 4K30.
-COMPARISON_MODES = [
-    ("1080p @ 30 fps", 1920, 1080, 30),
-    ("1080p @ 60 fps", 1920, 1080, 60),
-    ("4K UHD @ 30 fps", 3840, 2160, 30),
-]
+
+def hsv_to_hex(target_color: TargetColor) -> str:
+    red, green, blue = colorsys.hsv_to_rgb(
+        target_color.h / 180.0,
+        target_color.s / 255.0,
+        target_color.v / 255.0,
+    )
+    return f"#{round(red * 255):02x}{round(green * 255):02x}{round(blue * 255):02x}"
 
 
 class MainWindow:
@@ -56,7 +55,6 @@ class MainWindow:
 
         self._worker: CameraWorker | None = None
         self._recorder: ActionRecorder | None = None
-        self._calibration: CalibrationWindow | None = None
         self._save_after_id: str | None = None
         self._fired_until = 0.0
 
@@ -103,28 +101,10 @@ class MainWindow:
         self._build_roi_section(left.body, 4)
         self._build_color_section(left.body, 5)
         self._build_action_section(left.body, 6)
-        self._build_performance_section(left.body, 7)
 
         self._preview = PreviewCanvas(right, on_roi_changed=self._on_roi_changed, on_color_sampled=self._on_color_sampled)
         self._preview.grid(row=0, column=0, sticky="nsew")
         self._preview.set_roi(self.config.roi)
-
-        quick_stats = ttk.Frame(right, style="Panel.TFrame", padding=(12, 8))
-        quick_stats.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        for i in range(4):
-            quick_stats.columnconfigure(i, weight=1)
-        self._qs_fps = self._quick_stat(quick_stats, 0, "Achieved fps")
-        self._qs_processing = self._quick_stat(quick_stats, 1, "Processing")
-        self._qs_dispatch = self._quick_stat(quick_stats, 2, "Dispatch")
-        self._qs_match = self._quick_stat(quick_stats, 3, "Match")
-
-    def _quick_stat(self, parent: tk.Widget, col: int, label: str) -> ttk.Label:
-        cell = ttk.Frame(parent, style="Panel.TFrame")
-        cell.grid(row=0, column=col, sticky="ew")
-        ttk.Label(cell, text=label, style="Muted.TLabel").pack(anchor="w")
-        value = ttk.Label(cell, text="-", style="StatValue.TLabel")
-        value.pack(anchor="w")
-        return value
 
     # ------------------------------------------------------------------
     # Section 1: Camera
@@ -197,36 +177,6 @@ class MainWindow:
         apply_btn = ttk.Button(section.body, text="Apply (restarts camera)", style="Ghost.TButton", command=self._apply_camera_settings)
         apply_btn.pack(fill="x", pady=(4, 10))
         add_help(apply_btn, "Resolution and frame rate need the camera stream reopened to take effect reliably, so they apply here rather than live.")
-
-        ttk.Separator(section.body).pack(fill="x", pady=(0, 8))
-        ttk.Label(section.body, text="How resolution and frame rate affect delay", style="Body.TLabel").pack(anchor="w")
-        self._build_comparison_table(section.body)
-        ttk.Label(
-            section.body,
-            style="Muted.TLabel",
-            wraplength=310,
-            justify="left",
-            text=(
-                "Frame period comes from fps alone, so 1080p30 and 4K30 have the "
-                "same theoretical spacing between frames - resolution doesn't "
-                "change that part. What resolution changes is how much data "
-                "crosses USB per frame and how long this app's own processing "
-                "takes. See Performance & latency below for what's actually "
-                "happening on this camera, and to run a real measured test."
-            ),
-        ).pack(anchor="w", pady=(6, 0))
-
-    def _build_comparison_table(self, parent: tk.Widget) -> None:
-        table = ttk.Frame(parent, style="Panel.TFrame")
-        table.pack(fill="x", pady=(6, 0))
-        headers = ["Mode", "Frame period", "Megapixels"]
-        for col, text in enumerate(headers):
-            ttk.Label(table, text=text, style="Muted.TLabel").grid(row=0, column=col, sticky="w", padx=(0, 10))
-        rows: list[ModeComparison] = compare_modes(COMPARISON_MODES)
-        for r, mode in enumerate(rows, start=1):
-            ttk.Label(table, text=mode.label, style="Body.TLabel").grid(row=r, column=0, sticky="w", padx=(0, 10), pady=1)
-            ttk.Label(table, text=f"{mode.frame_period_ms:.1f} ms", style="Body.TLabel").grid(row=r, column=1, sticky="w", padx=(0, 10))
-            ttk.Label(table, text=f"{mode.megapixels:.2f} MP", style="Body.TLabel").grid(row=r, column=2, sticky="w")
 
     def _apply_camera_settings(self) -> None:
         label = self._res_var.get()
@@ -326,7 +276,7 @@ class MainWindow:
         self._color_label.pack(side="left", padx=8)
         sample_btn = ttk.Button(swatch_row, text="Sample color", style="Ghost.TButton", command=self._start_color_sampling)
         sample_btn.pack(side="right")
-        add_help(sample_btn, "Enable preview, then click this and click the color in the preview you want to detect.")
+        add_help(sample_btn, "Start the camera, click this, then select the color in the preview.")
         self._refresh_color_swatch()
 
         for key, label in (("h_tolerance", "Hue tolerance"), ("s_tolerance", "Saturation tolerance"), ("v_tolerance", "Brightness tolerance")):
@@ -347,9 +297,6 @@ class MainWindow:
         self._match_readout.pack(fill="x", pady=(6, 0))
 
     def _start_color_sampling(self) -> None:
-        if self.config.preview_mode == "off":
-            self._color_label.configure(text="Enable preview first (Performance & latency below)")
-            return
         self._preview.set_mode_sample_color()
         self._color_label.configure(text="Click the target color in the preview...")
 
@@ -431,67 +378,6 @@ class MainWindow:
         self._schedule_save()
 
     # ------------------------------------------------------------------
-    # Section 7: Performance & latency
-    # ------------------------------------------------------------------
-
-    def _build_performance_section(self, parent: tk.Widget, number: int) -> None:
-        section = Section(parent, number, "Performance & latency", self.fonts)
-        section.pack(fill="x", pady=(0, 10))
-
-        preview_row = ttk.Frame(section.body, style="Panel.TFrame")
-        preview_row.pack(fill="x")
-        ttk.Label(preview_row, text="Preview", style="Body.TLabel").pack(side="left")
-        self._preview_var = tk.StringVar(value=PREVIEW_MODE_LABELS[self.config.preview_mode])
-        preview_combo = ttk.Combobox(
-            preview_row, textvariable=self._preview_var, state="readonly",
-            values=[PREVIEW_MODE_LABELS[m] for m in PREVIEW_MODES],
-        )
-        preview_combo.pack(side="right")
-        preview_combo.bind("<<ComboboxSelected>>", self._on_preview_mode_changed)
-        add_help(
-            preview_row,
-            "Off skips all preview rendering for the lowest possible overhead; "
-            "detection keeps running at full speed either way. Cheap throttles "
-            "and shrinks the preview image; Full redraws every frame.",
-        )
-
-        self._pipeline_note_shown = False
-        for key, label in (
-            ("achieved_fps", "Achieved fps"),
-            ("processing_ms", "Detection processing"),
-            ("dispatch_ms", "Action dispatch"),
-            ("estimated_pipeline_ms", "Estimated pipeline latency"),
-        ):
-            row = StatRow(section.body, label, self.fonts)
-            row.pack(fill="x", pady=2)
-            setattr(self, f"_perf_{key}", row)
-
-        ttk.Label(
-            section.body, style="Muted.TLabel", wraplength=310, justify="left",
-            text="This estimate covers frame period plus this app's own measured processing and dispatch time. It excludes sensor, USB, and driver delay upstream of this process - those vary by camera and aren't visible from here.",
-        ).pack(anchor="w", pady=(4, 8))
-
-        calibrate_btn = ttk.Button(section.body, text="Run latency self-test", style="Ghost.TButton", command=self._open_calibration)
-        calibrate_btn.pack(fill="x")
-        add_help(calibrate_btn, "Point the camera at a flashing on-screen swatch to measure real end-to-end latency, including camera and USB delay.")
-
-    def _on_preview_mode_changed(self, *_args) -> None:
-        label_to_mode = {v: k for k, v in PREVIEW_MODE_LABELS.items()}
-        mode = label_to_mode.get(self._preview_var.get(), "cheap")
-        self.config.preview_mode = mode
-        if self._worker is not None:
-            self._worker.set_preview_mode(mode)
-        if mode == "off":
-            self._preview.show_disabled()
-        self._schedule_save()
-
-    def _open_calibration(self) -> None:
-        if self._calibration is not None and self._calibration.winfo_exists():
-            self._calibration.lift()
-            return
-        self._calibration = CalibrationWindow(self.root, self.fonts, self.config.target_color)
-
-    # ------------------------------------------------------------------
     # Start / stop
     # ------------------------------------------------------------------
 
@@ -521,13 +407,13 @@ class MainWindow:
             action_provider=lambda: self.config.action,
             on_error=lambda msg: self.root.after(0, self._handle_camera_error, msg),
         )
-        worker.set_preview_mode(self.config.preview_mode)
         worker.start()
         self._worker = worker
         self._start_stop_btn.configure(text="Stop")
         self._frame_interval_stat.reset()
         self._processing_stat.reset()
         self._dispatch_stat.reset()
+        self._preview.set_latency(None)
 
     def _stop_worker(self) -> None:
         if self._worker is not None:
@@ -536,6 +422,7 @@ class MainWindow:
             self._worker = None
         self._start_stop_btn.configure(text="Start")
         self._status_pill.set_status("idle", "Idle")
+        self._preview.set_latency(None)
 
     def _restart_worker(self) -> None:
         self._stop_worker()
@@ -545,6 +432,7 @@ class MainWindow:
         self._worker = None
         self._start_stop_btn.configure(text="Start")
         self._status_pill.set_status("idle", "Idle")
+        self._preview.set_latency(None)
         messagebox.showerror("Camera error", message)
 
     def _reset_detector_if_running(self) -> None:
@@ -588,28 +476,17 @@ class MainWindow:
         if result.preview_rgb is not None:
             self._preview.show_frame(result.preview_rgb, result.preview_scale)
 
-        self._update_performance_panel()
+        self._update_latency_readout()
 
-        self._qs_match.configure(text=f"{result.match_ratio * 100:.0f}%")
-
-    def _update_performance_panel(self) -> None:
+    def _update_latency_readout(self) -> None:
         requested_fps = self._worker.actual_fps if self._worker and self._worker.actual_fps else float(self.config.fps)
-        estimate = estimate_pipeline(requested_fps, self._frame_interval_stat, self._processing_stat, self._dispatch_stat)
-
-        fps_text = f"{estimate.achieved_fps:.1f}" if estimate.achieved_fps else "Measuring..."
-        self._perf_achieved_fps.set(fps_text)
-        self._qs_fps.configure(text=fps_text)
-
-        proc_text = f"{estimate.processing_ms:.2f} ms" if estimate.processing_ms is not None else "-"
-        self._perf_processing_ms.set(proc_text)
-        self._qs_processing.configure(text=proc_text)
-
-        dispatch_text = f"{estimate.dispatch_ms:.2f} ms" if estimate.dispatch_ms else "-"
-        self._perf_dispatch_ms.set(dispatch_text)
-        self._qs_dispatch.configure(text=dispatch_text)
-
-        total_text = f"{estimate.estimated_pipeline_ms:.1f} ms" if estimate.estimated_pipeline_ms is not None else "Measuring..."
-        self._perf_estimated_pipeline_ms.set(total_text)
+        latency = estimate_pipeline(
+            requested_fps,
+            self._frame_interval_stat,
+            self._processing_stat,
+            self._dispatch_stat,
+        )
+        self._preview.set_latency(f"Latency ~{latency:.0f} ms" if latency is not None else "Latency measuring...")
 
     # ------------------------------------------------------------------
     # Config persistence

@@ -1,0 +1,48 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build executable
+        run: >-
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name NotTriggerbot --collect-submodules pynput
+          --hidden-import pygrabber.dshow_graph main.py
+
+      - name: Publish latest release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag --force latest "$GITHUB_SHA"
+          git push origin refs/tags/latest --force
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest dist/NotTriggerbot.exe --clobber
+          else
+            gh release create latest dist/NotTriggerbot.exe \
+              --title "Latest Windows build" \
+              --notes "Download NotTriggerbot.exe and open it to run the app."
+          fi
