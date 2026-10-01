@@ -1,6 +1,6 @@
 # Not Triggerbot
 
-A small Windows app that watches part of a webcam image for a color change and sends a keyboard or mouse action when it detects one.
+A small Windows app that watches a webcam region for a color and sends a keyboard or mouse action when it matches.
 
 ## Download
 
@@ -8,13 +8,14 @@ A small Windows app that watches part of a webcam image for a color change and s
 
 ## Setup
 
-1. Choose your camera and set its resolution and frame rate. Click **Apply**.
-2. Click **Start** to open the camera preview.
-3. Draw a box around the part of the image to watch.
-4. Select **Sample color**, then click the product color in the preview.
-5. Record the key or mouse button used by your QC software.
+1. Choose your camera and click **Start**. It opens at the camera's default resolution and frame rate.
+2. Choose a region shape. Drag a rectangle, click a point, or set a circle radius and click its center.
+3. Select **Sample color**, then click the color to watch in the preview.
+4. Click **Record action**, then press the key or mouse button to send. A left click is saved as **Mouse: LMB**.
 
-The preview shows an estimated latency while the app is running. The estimate uses the camera's frame timing and the app's detection and action time. It does not measure the camera's full sensor-to-screen delay.
+The latency estimate uses recent camera frame timing and the app's detection and action time. It does not include the camera's full sensor-to-screen delay. **Preview** turns off preview processing while detection continues. **Low CPU preview** updates a smaller preview less often. The FPS override is optional; leave it blank to use the camera default. Resolution always stays at the camera default.
+
+Recorded mouse actions are sent through Windows as system mouse input at the current pointer position. They are not DOM clicks, though Windows marks software-generated input as injected.
 
 ## Run From Source
 
@@ -31,4 +32,5 @@ py -3.12 -m pytest
 
 - If the camera is missing, click **Refresh** and close other apps that may be using it.
 - If the trigger does not fire, check that the region and sampled color are correct, then lower the match threshold or adjust the color tolerances.
+- To test a recorded action in another app, leave that app active and put the pointer where the click should land before the trigger fires.
 - On first launch, Windows may ask you to confirm that you want to run the downloaded app.

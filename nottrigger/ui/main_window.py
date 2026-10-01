@@ -11,11 +11,9 @@ from tkinter import messagebox, ttk
 
 from nottrigger.actions import ActionRecorder
 from nottrigger.camera import CameraSettings, CameraWorker, FrameResult, list_cameras
-from nottrigger.config import AppConfig, TargetColor, load_config, save_config
+from nottrigger.config import AppConfig, RegionOfInterest, TargetColor, load_config, save_config
 from nottrigger.constants import (
     CONFIG_SAVE_DEBOUNCE_MS,
-    FPS_PRESETS,
-    RESOLUTION_PRESETS,
     STATS_WINDOW_DISPATCH,
     STATS_WINDOW_FRAME_INTERVAL,
     STATS_WINDOW_PROCESSING,
@@ -57,12 +55,12 @@ class MainWindow:
         self._recorder: ActionRecorder | None = None
         self._save_after_id: str | None = None
         self._fired_until = 0.0
+        self._show_preview = True
+        self._low_cpu = False
 
         self._frame_interval_stat = RollingStat(STATS_WINDOW_FRAME_INTERVAL)
         self._processing_stat = RollingStat(STATS_WINDOW_PROCESSING)
         self._dispatch_stat = RollingStat(STATS_WINDOW_DISPATCH)
-
-        self._resolution_lookup = {label: (w, h) for label, w, h in RESOLUTION_PRESETS}
 
         self._build_layout()
         self._poll()
@@ -77,6 +75,16 @@ class MainWindow:
         ttk.Label(header, text="Not Triggerbot", style="Title.TLabel").pack(side="left")
         self._status_pill = StatusPill(header, self.fonts)
         self._status_pill.pack(side="left", padx=16)
+        self._latency_var = tk.StringVar(value="Latency --")
+        ttk.Label(header, textvariable=self._latency_var, style="OnBg.TLabel").pack(side="left", padx=8)
+        self._preview_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            header, text="Preview", variable=self._preview_var, command=self._on_preview_options_changed
+        ).pack(side="right", padx=(8, 0))
+        self._low_cpu_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            header, text="Low CPU preview", variable=self._low_cpu_var, command=self._on_preview_options_changed
+        ).pack(side="right", padx=(8, 0))
         self._start_stop_btn = ttk.Button(header, text="Start", style="Accent.TButton", command=self._toggle_run)
         self._start_stop_btn.pack(side="right")
 
@@ -96,7 +104,7 @@ class MainWindow:
         right.columnconfigure(0, weight=1)
 
         self._build_camera_section(left.body, 1)
-        self._build_resolution_section(left.body, 2)
+        self._build_capture_section(left.body, 2)
         self._build_adjustments_section(left.body, 3)
         self._build_roi_section(left.body, 4)
         self._build_color_section(left.body, 5)
@@ -119,11 +127,14 @@ class MainWindow:
         self._camera_var = tk.StringVar()
         self._camera_combo = ttk.Combobox(row, textvariable=self._camera_var, state="readonly")
         self._camera_combo.pack(side="left", fill="x", expand=True)
+        self._camera_combo.bind("<<ComboboxSelected>>", self._on_camera_selected)
         add_help(self._camera_combo, "Which USB camera to capture from. Names come from Windows if available.")
 
         refresh_btn = ttk.Button(row, text="Refresh", style="Ghost.TButton", command=self._refresh_cameras)
         refresh_btn.pack(side="left", padx=(8, 0))
 
+        self._camera_mode_label = ttk.Label(section.body, text="Camera mode: Native", style="Muted.TLabel")
+        self._camera_mode_label.pack(anchor="w", pady=(6, 0))
         self._refresh_cameras(select_configured=True)
 
     def _refresh_cameras(self, select_configured: bool = False) -> None:
@@ -143,49 +154,52 @@ class MainWindow:
         if idx < 0 or not getattr(self, "_camera_devices", None):
             return
         device = self._camera_devices[idx]
+        changed = device.index != self.config.camera_index
         self.config.camera_index = device.index
         self.config.camera_name = device.name
+        if changed:
+            self.config.requested_fps = None
+            self._fps_var.set("") if hasattr(self, "_fps_var") else None
         self._schedule_save()
+        if changed and self._worker is not None:
+            self._restart_worker()
 
     # ------------------------------------------------------------------
-    # Section 2: Resolution & frame rate
+    # Section 2: Capture settings
     # ------------------------------------------------------------------
 
-    def _build_resolution_section(self, parent: tk.Widget, number: int) -> None:
-        section = Section(parent, number, "Resolution & frame rate", self.fonts)
+    def _build_capture_section(self, parent: tk.Widget, number: int) -> None:
+        section = Section(parent, number, "Capture settings", self.fonts)
         section.pack(fill="x", pady=(0, 10))
 
-        res_row = ttk.Frame(section.body, style="Panel.TFrame")
-        res_row.pack(fill="x", pady=(0, 6))
-        ttk.Label(res_row, text="Resolution", style="Body.TLabel").pack(side="left")
-        self._res_var = tk.StringVar()
-        res_combo = ttk.Combobox(
-            res_row, textvariable=self._res_var, state="readonly",
-            values=[label for label, _, _ in RESOLUTION_PRESETS],
+        row = ttk.Frame(section.body, style="Panel.TFrame")
+        row.pack(fill="x")
+        ttk.Label(row, text="FPS override", style="Body.TLabel").pack(side="left")
+        self._fps_var = tk.StringVar(
+            value="" if self.config.requested_fps is None else str(self.config.requested_fps)
         )
-        current_res_label = next((l for l, w, h in RESOLUTION_PRESETS if w == self.config.width and h == self.config.height), RESOLUTION_PRESETS[2][0])
-        self._res_var.set(current_res_label)
-        res_combo.pack(side="right")
+        ttk.Spinbox(row, from_=1, to=240, increment=1, width=8, textvariable=self._fps_var).pack(side="right")
+        ttk.Label(
+            section.body,
+            text="Leave blank to use the camera's default frame rate. Resolution stays at the camera default.",
+            style="Muted.TLabel",
+            wraplength=310,
+            justify="left",
+        ).pack(anchor="w", pady=(5, 0))
 
-        fps_row = ttk.Frame(section.body, style="Panel.TFrame")
-        fps_row.pack(fill="x", pady=(0, 6))
-        ttk.Label(fps_row, text="Frame rate", style="Body.TLabel").pack(side="left")
-        self._fps_var = tk.StringVar(value=str(self.config.fps) if self.config.fps in FPS_PRESETS else str(FPS_PRESETS[2]))
-        fps_combo = ttk.Combobox(fps_row, textvariable=self._fps_var, state="readonly", values=[str(f) for f in FPS_PRESETS])
-        fps_combo.pack(side="right")
-
-        apply_btn = ttk.Button(section.body, text="Apply (restarts camera)", style="Ghost.TButton", command=self._apply_camera_settings)
+        apply_btn = ttk.Button(section.body, text="Apply frame rate", style="Ghost.TButton", command=self._apply_camera_settings)
         apply_btn.pack(fill="x", pady=(4, 10))
-        add_help(apply_btn, "Resolution and frame rate need the camera stream reopened to take effect reliably, so they apply here rather than live.")
+        add_help(apply_btn, "Changing the frame rate restarts the camera. Leave it blank to return to the camera's default.")
 
     def _apply_camera_settings(self) -> None:
-        label = self._res_var.get()
-        if label in self._resolution_lookup:
-            self.config.width, self.config.height = self._resolution_lookup[label]
+        value = self._fps_var.get().strip()
         try:
-            self.config.fps = int(self._fps_var.get())
+            self.config.requested_fps = int(value) if value else None
+            if self.config.requested_fps is not None and not 1 <= self.config.requested_fps <= 240:
+                raise ValueError
         except ValueError:
-            pass
+            messagebox.showerror("Invalid frame rate", "Enter a frame rate from 1 to 240, or leave it blank.")
+            return
         self._schedule_save()
         if self._worker is not None:
             self._restart_worker()
@@ -195,7 +209,7 @@ class MainWindow:
     # ------------------------------------------------------------------
 
     def _build_adjustments_section(self, parent: tk.Widget, number: int) -> None:
-        section = Section(parent, number, "Image adjustments", self.fonts)
+        section = Section(parent, number, "Brightness & exposure", self.fonts)
         section.pack(fill="x", pady=(0, 10))
         add_help(
             section,
@@ -206,7 +220,7 @@ class MainWindow:
         )
 
         self._adj_sliders: dict[str, LabeledSlider] = {}
-        specs = [("brightness", "Brightness", 0, 255), ("contrast", "Contrast", 0, 255), ("saturation", "Saturation", 0, 255), ("exposure", "Exposure", -13, 0)]
+        specs = [("brightness", "Brightness", 0, 255), ("exposure", "Exposure", -13, 0)]
         for key, label, lo, hi in specs:
             current = getattr(self.config, key)
             slider = LabeledSlider(
@@ -232,8 +246,35 @@ class MainWindow:
         section.pack(fill="x", pady=(0, 10))
         ttk.Label(
             section.body, style="Body.TLabel", wraplength=310, justify="left",
-            text="Click and drag on the preview to draw the region the camera watches for a color mismatch.",
+            text="Choose a shape. Click for a point or circle, or drag to draw a rectangle.",
         ).pack(anchor="w")
+        shape_row = ttk.Frame(section.body, style="Panel.TFrame")
+        shape_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(shape_row, text="Shape", style="Body.TLabel").pack(side="left")
+        if self.config.roi.shape not in ("rectangle", "circle", "point"):
+            self.config.roi.shape = "rectangle"
+        self._roi_shape_var = tk.StringVar(value=self.config.roi.shape.title())
+        self._roi_shape_combo = ttk.Combobox(
+            shape_row,
+            textvariable=self._roi_shape_var,
+            state="readonly",
+            values=("Rectangle", "Circle", "Point"),
+            width=12,
+        )
+        self._roi_shape_combo.pack(side="right")
+        self._roi_shape_combo.bind("<<ComboboxSelected>>", self._on_roi_shape_changed)
+        self._roi_radius_slider = LabeledSlider(
+            section.body,
+            "Circle radius",
+            1,
+            300,
+            self.config.roi.radius,
+            self.fonts,
+            value_format="{:.0f} px",
+            on_change=self._on_roi_radius_changed,
+        )
+        if self.config.roi.shape == "circle":
+            self._roi_radius_slider.pack(fill="x", pady=4)
         self._roi_readout = StatRow(section.body, "Current region", self.fonts)
         self._roi_readout.pack(fill="x", pady=(8, 0))
         self._update_roi_readout()
@@ -246,10 +287,40 @@ class MainWindow:
         self._schedule_save()
         self._reset_detector_if_running()
 
-    def _clear_roi(self) -> None:
-        from nottrigger.config import RegionOfInterest
+    def _on_roi_shape_changed(self, *_args) -> None:
+        shape = self._roi_shape_var.get().lower()
+        old_shape = self.config.roi.shape
+        roi = self.config.roi
+        if shape in ("point", "circle") and old_shape == "rectangle" and not roi.is_empty():
+            roi.x += roi.w // 2
+            roi.y += roi.h // 2
+            roi.w = roi.h = 1
+        elif shape == "rectangle" and old_shape == "circle" and not roi.is_empty():
+            roi.x -= roi.radius
+            roi.y -= roi.radius
+            roi.w = roi.h = roi.radius * 2 + 1
+        self.config.roi.shape = shape
+        self._preview.set_roi_shape(shape, self.config.roi.radius)
+        if shape == "circle":
+            self._roi_radius_slider.pack(fill="x", pady=4)
+        else:
+            self._roi_radius_slider.pack_forget()
+        self._update_roi_readout()
+        self._schedule_save()
+        self._reset_detector_if_running()
 
-        self.config.roi = RegionOfInterest()
+    def _on_roi_radius_changed(self, value: float) -> None:
+        self.config.roi.radius = int(value)
+        self._preview.set_roi(self.config.roi)
+        self._update_roi_readout()
+        self._schedule_save()
+        self._reset_detector_if_running()
+
+    def _clear_roi(self) -> None:
+        self.config.roi = RegionOfInterest(
+            shape=self._roi_shape_var.get().lower(),
+            radius=self.config.roi.radius,
+        )
         self._preview.set_roi(self.config.roi)
         self._update_roi_readout()
         self._schedule_save()
@@ -257,7 +328,14 @@ class MainWindow:
 
     def _update_roi_readout(self) -> None:
         roi = self.config.roi
-        text = "Not set" if roi.is_empty() else f"{roi.w} x {roi.h} px at ({roi.x}, {roi.y})"
+        if roi.is_empty():
+            text = "Not set"
+        elif roi.shape == "point":
+            text = f"1 pixel at ({roi.x}, {roi.y})"
+        elif roi.shape == "circle":
+            text = f"Circle, radius {roi.radius} px at ({roi.x}, {roi.y})"
+        else:
+            text = f"{roi.w} x {roi.h} px at ({roi.x}, {roi.y})"
         self._roi_readout.set(text)
 
     # ------------------------------------------------------------------
@@ -297,6 +375,9 @@ class MainWindow:
         self._match_readout.pack(fill="x", pady=(6, 0))
 
     def _start_color_sampling(self) -> None:
+        if not self._show_preview:
+            self._color_label.configure(text="Turn on Preview to sample a color")
+            return
         self._preview.set_mode_sample_color()
         self._color_label.configure(text="Click the target color in the preview...")
 
@@ -390,12 +471,8 @@ class MainWindow:
     def _start_worker(self) -> None:
         settings = CameraSettings(
             index=self.config.camera_index,
-            width=self.config.width,
-            height=self.config.height,
-            fps=self.config.fps,
+            requested_fps=self.config.requested_fps,
             brightness=self.config.brightness,
-            contrast=self.config.contrast,
-            saturation=self.config.saturation,
             exposure=self.config.exposure,
             buffer_size=self.config.buffer_size,
         )
@@ -407,6 +484,7 @@ class MainWindow:
             action_provider=lambda: self.config.action,
             on_error=lambda msg: self.root.after(0, self._handle_camera_error, msg),
         )
+        worker.set_preview_options(self._show_preview, self._low_cpu)
         worker.start()
         self._worker = worker
         self._start_stop_btn.configure(text="Stop")
@@ -422,6 +500,7 @@ class MainWindow:
             self._worker = None
         self._start_stop_btn.configure(text="Start")
         self._status_pill.set_status("idle", "Idle")
+        self._latency_var.set("Latency --")
         self._preview.set_latency(None)
 
     def _restart_worker(self) -> None:
@@ -432,6 +511,7 @@ class MainWindow:
         self._worker = None
         self._start_stop_btn.configure(text="Start")
         self._status_pill.set_status("idle", "Idle")
+        self._latency_var.set("Latency --")
         self._preview.set_latency(None)
         messagebox.showerror("Camera error", message)
 
@@ -445,6 +525,11 @@ class MainWindow:
 
     def _poll(self) -> None:
         if self._worker is not None:
+            if self._worker.actual_width and self._worker.actual_height:
+                fps_text = f", {self._worker.actual_fps:.0f} fps" if self._worker.actual_fps else ""
+                self._camera_mode_label.configure(
+                    text=f"Camera mode: {self._worker.actual_width} x {self._worker.actual_height}{fps_text}"
+                )
             result = self._worker.results.pop()
             if result is not None:
                 self._apply_frame_result(result)
@@ -479,14 +564,24 @@ class MainWindow:
         self._update_latency_readout()
 
     def _update_latency_readout(self) -> None:
-        requested_fps = self._worker.actual_fps if self._worker and self._worker.actual_fps else float(self.config.fps)
+        requested_fps = self._worker.actual_fps if self._worker and self._worker.actual_fps else 30.0
         latency = estimate_pipeline(
             requested_fps,
             self._frame_interval_stat,
             self._processing_stat,
             self._dispatch_stat,
         )
-        self._preview.set_latency(f"Latency ~{latency:.0f} ms" if latency is not None else "Latency measuring...")
+        text = f"Latency ~{latency:.0f} ms" if latency is not None else "Latency measuring..."
+        self._latency_var.set(text)
+        self._preview.set_latency(text if self._show_preview else None)
+
+    def _on_preview_options_changed(self) -> None:
+        self._show_preview = self._preview_var.get()
+        self._low_cpu = self._low_cpu_var.get()
+        self._preview.set_preview_visible(self._show_preview)
+        self._preview.set_latency(self._latency_var.get() if self._show_preview else None)
+        if self._worker is not None:
+            self._worker.set_preview_options(self._show_preview, self._low_cpu)
 
     # ------------------------------------------------------------------
     # Config persistence
@@ -504,6 +599,8 @@ class MainWindow:
     def _on_close(self) -> None:
         if self._save_after_id is not None:
             self.root.after_cancel(self._save_after_id)
+        if self._recorder is not None:
+            self._recorder.stop()
         self._stop_worker()
         save_config(self.config_path, self.config)
         self.root.destroy()

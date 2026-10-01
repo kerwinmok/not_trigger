@@ -1,7 +1,6 @@
-# Tested against opencv-python 4.13, numpy 2.4, pillow 12.1, pynput 1.8.
-# Ranges below avoid an untested major-version jump (e.g. opencv-python 5.x)
-# while still picking up patch/minor fixes.
-opencv-python>=4.9,<5
+# Headless OpenCV keeps camera capture and color detection without its GUI backends.
+# Tkinter supplies the app interface.
+opencv-python-headless>=4.9,<5
 numpy>=1.26,<3
 pillow>=10,<13
 pynput>=1.7,<2

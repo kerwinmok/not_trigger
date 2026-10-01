@@ -9,13 +9,15 @@ ever runs where pynput is present.
 
 from __future__ import annotations
 
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from nottrigger.config import TriggerAction
 
-MOUSE_BUTTONS = ("left", "right", "middle")
+MOUSE_ALIASES = {"lmb": "left", "rmb": "right", "mmb": "middle"}
+MOUSE_LABELS = {"left": "LMB", "right": "RMB", "middle": "MMB"}
 
 
 def _describe_key(key) -> tuple[str, bool, str]:
@@ -34,7 +36,9 @@ def key_to_action(key) -> TriggerAction:
 
 def mouse_button_to_action(button) -> TriggerAction:
     name = getattr(button, "name", str(button))
-    return TriggerAction(kind="mouse", value=name, is_special_key=False, label=f"Mouse: {name} click")
+    name = MOUSE_ALIASES.get(name.lower(), name.lower())
+    label = MOUSE_LABELS.get(name, name)
+    return TriggerAction(kind="mouse", value=name, is_special_key=False, label=f"Mouse: {label}")
 
 
 @dataclass
@@ -43,13 +47,17 @@ class ActionRecorder:
 
     _keyboard_listener: object = None
     _mouse_listener: object = None
+    _capture_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _captured: bool = field(default=False, init=False)
 
     def start(self, on_captured: Callable[[TriggerAction], None]) -> None:
         from pynput import keyboard, mouse
 
+        with self._capture_lock:
+            self._captured = False
+
         def finish(action: TriggerAction) -> None:
-            self.stop()
-            on_captured(action)
+            self._finish(action, on_captured)
 
         def on_press(key):
             finish(key_to_action(key))
@@ -65,6 +73,14 @@ class ActionRecorder:
         self._mouse_listener = mouse.Listener(on_click=on_click)
         self._keyboard_listener.start()
         self._mouse_listener.start()
+
+    def _finish(self, action: TriggerAction, on_captured: Callable[[TriggerAction], None]) -> None:
+        with self._capture_lock:
+            if self._captured:
+                return
+            self._captured = True
+        self.stop()
+        on_captured(action)
 
     def stop(self) -> None:
         if self._keyboard_listener is not None:
@@ -106,7 +122,9 @@ class ActionDispatcher:
         elif action.kind == "mouse":
             from pynput.mouse import Button
 
-            button = getattr(Button, action.value, Button.left)
+            button = getattr(Button, action.value, None)
+            if button is None:
+                raise ValueError(f"Unsupported mouse button: {action.value}")
             self._mouse_controller.click(button, 1)
 
         return (time.perf_counter() - t0) * 1000.0

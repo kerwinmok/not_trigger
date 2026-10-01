@@ -38,7 +38,7 @@ class TargetColor:
 
 @dataclass
 class RegionOfInterest:
-    """Pixel rect in the *native capture frame's* coordinate space.
+    """Detection region in native camera-frame coordinates.
 
     Kept in native pixels (not preview/display pixels) so it stays
     correct no matter what preview scaling or window size is active.
@@ -48,6 +48,8 @@ class RegionOfInterest:
     y: int = 0
     w: int = 0
     h: int = 0
+    shape: str = "rectangle"
+    radius: int = 20
 
     def is_empty(self) -> bool:
         return self.w <= 0 or self.h <= 0
@@ -69,15 +71,11 @@ class AppConfig:
     camera_index: int = 0
     camera_name: str = ""
 
-    # Resolution / frame rate
-    width: int = 1920
-    height: int = 1080
-    fps: int = 30
+    # Camera frame rate. None uses the camera's native rate.
+    requested_fps: int | None = None
 
-    # Image adjustments (None = leave at camera/driver default)
+    # Camera controls (None = leave at camera/driver default)
     brightness: float | None = None
-    contrast: float | None = None
-    saturation: float | None = None
     exposure: float | None = None
 
     # Detection
@@ -128,6 +126,15 @@ class AppConfig:
             else:
                 default_val = getattr(cfg, key)
                 setattr(cfg, key, _coerce(value, default_val))
+        if (
+            not isinstance(cfg.requested_fps, int)
+            or isinstance(cfg.requested_fps, bool)
+            or not 1 <= cfg.requested_fps <= 240
+        ):
+            cfg.requested_fps = None
+        if cfg.roi.shape not in ("rectangle", "circle", "point"):
+            cfg.roi.shape = "rectangle"
+        cfg.roi.radius = min(300, max(1, cfg.roi.radius))
         return cfg
 
 

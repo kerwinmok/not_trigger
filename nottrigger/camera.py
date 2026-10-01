@@ -5,8 +5,7 @@ Performance design, in one place because it matters for the whole app:
   - Detection always runs on the full-resolution frame the camera just
     produced, in this worker thread, at whatever rate the camera can
     sustain. It never waits on the UI.
-    - A small preview is resized and color-converted at a fixed low rate,
-        independent of capture fps.
+    - Preview resizing and color conversion can be disabled or throttled.
   - The UI thread never touches cv2.VideoCapture and the camera thread
     never touches Tkinter; they hand off through LatestBox, a tiny
     single-slot box (not a growing queue) so the UI always sees the
@@ -19,7 +18,7 @@ import logging
 import platform
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 import cv2
@@ -30,6 +29,8 @@ from nottrigger.config import RegionOfInterest, TargetColor, TriggerAction
 from nottrigger.constants import (
     CHEAP_PREVIEW_FPS,
     CHEAP_PREVIEW_MAX_WIDTH,
+    LOW_CPU_PREVIEW_FPS,
+    LOW_CPU_PREVIEW_MAX_WIDTH,
 )
 from nottrigger.detection import Detector
 
@@ -82,15 +83,10 @@ def list_cameras(max_probe: int = 8) -> list[CameraDevice]:
 @dataclass
 class CameraSettings:
     index: int = 0
-    width: int = 1920
-    height: int = 1080
-    fps: int = 30
+    requested_fps: int | None = None
     brightness: float | None = None
-    contrast: float | None = None
-    saturation: float | None = None
     exposure: float | None = None
     buffer_size: int = 1
-    use_mjpg: bool = True
 
 
 @dataclass
@@ -137,8 +133,6 @@ class CameraError(Exception):
 # generally need the stream reopened to take effect reliably.
 ADJUSTMENT_PROPS = {
     "brightness": cv2.CAP_PROP_BRIGHTNESS,
-    "contrast": cv2.CAP_PROP_CONTRAST,
-    "saturation": cv2.CAP_PROP_SATURATION,
     "exposure": cv2.CAP_PROP_EXPOSURE,
 }
 
@@ -169,6 +163,9 @@ class CameraWorker(threading.Thread):
 
         self.results = LatestBox()  # FrameResult, consumed by the UI
         self._last_preview_emit = 0.0
+        self._preview_enabled = True
+        self._low_cpu = False
+        self._preview_lock = threading.Lock()
 
         self.actual_width = 0
         self.actual_height = 0
@@ -178,7 +175,7 @@ class CameraWorker(threading.Thread):
         self._pending_adjustments: dict[str, float] = {}
 
     def apply_pending_adjustment(self, key: str, value: float) -> None:
-        """Queue a brightness/contrast/saturation/exposure change.
+        """Queue a brightness or exposure change.
 
         Applied from inside the capture loop on the next iteration, since
         cv2.VideoCapture isn't safe to touch from a second thread while
@@ -188,6 +185,11 @@ class CameraWorker(threading.Thread):
             return
         with self._adjustments_lock:
             self._pending_adjustments[key] = value
+
+    def set_preview_options(self, enabled: bool, low_cpu: bool) -> None:
+        with self._preview_lock:
+            self._preview_enabled = enabled
+            self._low_cpu = low_cpu
 
     def _drain_pending_adjustments(self, cap: cv2.VideoCapture) -> None:
         with self._adjustments_lock:
@@ -221,15 +223,8 @@ class CameraWorker(threading.Thread):
         if not cap.isOpened():
             raise CameraError(f"Could not open camera index {self.settings.index}.")
 
-        if self.settings.use_mjpg:
-            # MJPG lets most consumer webcams actually reach 1080p/4K at
-            # useful frame rates; raw formats often cap out much lower.
-            # Best-effort: some backends/drivers ignore this.
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.settings.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.settings.height)
-        cap.set(cv2.CAP_PROP_FPS, self.settings.fps)
+        if self.settings.requested_fps is not None:
+            cap.set(cv2.CAP_PROP_FPS, self.settings.requested_fps)
 
         # Ask the backend to keep as little internal buffer as possible,
         # so we always read the freshest frame rather than an
@@ -239,8 +234,6 @@ class CameraWorker(threading.Thread):
 
         for prop, value in (
             (cv2.CAP_PROP_BRIGHTNESS, self.settings.brightness),
-            (cv2.CAP_PROP_CONTRAST, self.settings.contrast),
-            (cv2.CAP_PROP_SATURATION, self.settings.saturation),
             (cv2.CAP_PROP_EXPOSURE, self.settings.exposure),
         ):
             if value is not None:
@@ -249,13 +242,10 @@ class CameraWorker(threading.Thread):
         return cap
 
     def _report_actual_mode(self, cap: cv2.VideoCapture) -> None:
-        # What we asked for and what the driver actually granted can
-        # differ; use the real values everywhere latency math depends
-        # on fps, not the requested ones.
-        self.actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or self.settings.width
-        self.actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or self.settings.height
+        self.actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         reported_fps = cap.get(cv2.CAP_PROP_FPS)
-        self.actual_fps = reported_fps if reported_fps and reported_fps > 0 else float(self.settings.fps)
+        self.actual_fps = reported_fps if reported_fps and reported_fps > 0 else 0.0
 
     def _capture_loop(self, cap: cv2.VideoCapture) -> None:
         last_frame_time: float | None = None
@@ -313,7 +303,15 @@ class CameraWorker(threading.Thread):
             )
 
     def _maybe_build_preview(self, frame_bgr: np.ndarray, now: float) -> tuple[np.ndarray | None, float]:
-        min_interval = 1.0 / CHEAP_PREVIEW_FPS
+        with self._preview_lock:
+            enabled = self._preview_enabled
+            low_cpu = self._low_cpu
+        if not enabled:
+            return None, 1.0
+
+        preview_fps = LOW_CPU_PREVIEW_FPS if low_cpu else CHEAP_PREVIEW_FPS
+        max_width = LOW_CPU_PREVIEW_MAX_WIDTH if low_cpu else CHEAP_PREVIEW_MAX_WIDTH
+        min_interval = 1.0 / preview_fps
         if now - self._last_preview_emit < min_interval:
             return None, 1.0
 
@@ -321,11 +319,11 @@ class CameraWorker(threading.Thread):
 
         h, w = frame_bgr.shape[:2]
         scale = 1.0
-        if w > CHEAP_PREVIEW_MAX_WIDTH:
-            scale = CHEAP_PREVIEW_MAX_WIDTH / w
+        if w > max_width:
+            scale = max_width / w
             frame_bgr = cv2.resize(
                 frame_bgr,
-                (CHEAP_PREVIEW_MAX_WIDTH, max(1, round(h * scale))),
+                (max_width, max(1, round(h * scale))),
                 interpolation=cv2.INTER_AREA,
             )
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)

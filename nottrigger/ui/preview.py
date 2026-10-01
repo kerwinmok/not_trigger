@@ -53,6 +53,9 @@ class PreviewCanvas(tk.Canvas):
         self._offset = (0, 0)  # canvas-space top-left of the drawn image
 
         self._roi_native = RegionOfInterest()
+        self._roi_shape = "rectangle"
+        self._roi_radius = 20
+        self._preview_visible = True
         self._mode = "roi"  # "roi" or "sample"
         self._drag_start_canvas: tuple[int, int] | None = None
 
@@ -72,6 +75,13 @@ class PreviewCanvas(tk.Canvas):
 
     def set_roi(self, roi: RegionOfInterest) -> None:
         self._roi_native = roi
+        self._roi_shape = roi.shape
+        self._roi_radius = roi.radius
+        self._redraw_roi()
+
+    def set_roi_shape(self, shape: str, radius: int) -> None:
+        self._roi_shape = shape
+        self._roi_radius = radius
         self._redraw_roi()
 
     def set_status_color(self, status: str) -> None:
@@ -80,6 +90,8 @@ class PreviewCanvas(tk.Canvas):
             self.itemconfigure(self._roi_item, outline=color)
 
     def show_frame(self, rgb: np.ndarray, preview_scale: float) -> None:
+        if not self._preview_visible:
+            return
         self._hide_placeholder()
         self._preview_array = rgb
         self._preview_scale = preview_scale if preview_scale > 0 else 1.0
@@ -93,6 +105,20 @@ class PreviewCanvas(tk.Canvas):
         self.itemconfigure(self._latency_item, text=text, state="normal")
         self.itemconfigure(self._latency_bg_item, state="normal")
         self._position_latency()
+
+    def set_preview_visible(self, visible: bool) -> None:
+        self._preview_visible = visible
+        if not visible:
+            self._preview_array = None
+            if self._image_item is not None:
+                self.itemconfigure(self._image_item, state="hidden")
+            if self._roi_item is not None:
+                self.itemconfigure(self._roi_item, state="hidden")
+            self._show_placeholder("Preview hidden. Detection is still running.")
+            self.set_latency(None)
+        else:
+            self._show_placeholder("Waiting for camera...")
+            self._redraw_roi()
 
     # -- rendering ---------------------------------------------------------
 
@@ -124,7 +150,7 @@ class PreviewCanvas(tk.Canvas):
             self._image_item = self.create_image(*self._offset, anchor="nw", image=self._photo)
         else:
             self.coords(self._image_item, *self._offset)
-            self.itemconfigure(self._image_item, image=self._photo)
+            self.itemconfigure(self._image_item, image=self._photo, state="normal")
         self.tag_lower(self._image_item)
 
         self._redraw_roi()
@@ -160,19 +186,38 @@ class PreviewCanvas(tk.Canvas):
             self._placeholder_item = None
 
     def _redraw_roi(self) -> None:
-        if self._roi_native.is_empty():
+        if self._roi_native.is_empty() or self._preview_array is None or not self._preview_visible:
             if self._roi_item is not None:
-                self.delete(self._roi_item)
-                self._roi_item = None
+                self.itemconfigure(self._roi_item, state="hidden")
             return
-        x0, y0 = self._native_to_canvas(self._roi_native.x, self._roi_native.y)
-        x1, y1 = self._native_to_canvas(
-            self._roi_native.x + self._roi_native.w, self._roi_native.y + self._roi_native.h
-        )
-        if self._roi_item is None:
-            self._roi_item = self.create_rectangle(x0, y0, x1, y1, outline=theme.status_color("idle"), width=2)
+        if self._roi_shape == "point":
+            x0, y0 = self._native_to_canvas(self._roi_native.x, self._roi_native.y)
+            coords = (x0 - 4, y0 - 4, x0 + 4, y0 + 4)
+            create = self.create_oval
+        elif self._roi_shape == "circle":
+            x0, y0 = self._native_to_canvas(
+                self._roi_native.x - self._roi_radius,
+                self._roi_native.y - self._roi_radius,
+            )
+            x1, y1 = self._native_to_canvas(
+                self._roi_native.x + self._roi_radius,
+                self._roi_native.y + self._roi_radius,
+            )
+            coords = (x0, y0, x1, y1)
+            create = self.create_oval
         else:
-            self.coords(self._roi_item, x0, y0, x1, y1)
+            x0, y0 = self._native_to_canvas(self._roi_native.x, self._roi_native.y)
+            x1, y1 = self._native_to_canvas(
+                self._roi_native.x + self._roi_native.w,
+                self._roi_native.y + self._roi_native.h,
+            )
+            coords = (x0, y0, x1, y1)
+            create = self.create_rectangle
+        if self._roi_item is None:
+            self._roi_item = create(*coords, outline=theme.status_color("idle"), width=2)
+        else:
+            self.coords(self._roi_item, *coords)
+        self.itemconfigure(self._roi_item, state="normal" if self._preview_visible else "hidden")
 
     # -- coordinate transforms --------------------------------------------
 
@@ -196,6 +241,26 @@ class PreviewCanvas(tk.Canvas):
         if self._mode == "sample":
             self._handle_sample_click(event)
             self._mode = "roi"
+            return
+        if self._preview_array is None:
+            return
+        if self._roi_shape in ("point", "circle"):
+            x, y = self._canvas_to_native(event.x, event.y)
+            height, width = self._preview_array.shape[:2]
+            width = max(1, round(width / self._preview_scale))
+            height = max(1, round(height / self._preview_scale))
+            x = min(max(0, x), width - 1)
+            y = min(max(0, y), height - 1)
+            self._roi_native = RegionOfInterest(
+                x=x,
+                y=y,
+                w=1,
+                h=1,
+                shape=self._roi_shape,
+                radius=self._roi_radius,
+            )
+            self._redraw_roi()
+            self._on_roi_changed(self._roi_native)
             return
         self._drag_start_canvas = (event.x, event.y)
         if self._drag_item is not None:
@@ -225,7 +290,7 @@ class PreviewCanvas(tk.Canvas):
         if w < MIN_ROI_SIZE or h < MIN_ROI_SIZE:
             return  # treat as a stray click, not a real ROI drag
 
-        roi = RegionOfInterest(x=max(0, nx0), y=max(0, ny0), w=w, h=h)
+        roi = RegionOfInterest(x=max(0, nx0), y=max(0, ny0), w=w, h=h, shape="rectangle")
         self._roi_native = roi
         self._redraw_roi()
         self._on_roi_changed(roi)

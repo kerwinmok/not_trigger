@@ -27,9 +27,18 @@ def clamp_roi_to_frame(roi: RegionOfInterest, frame_w: int, frame_h: int) -> Reg
     """
     x = max(0, min(roi.x, max(frame_w - 1, 0)))
     y = max(0, min(roi.y, max(frame_h - 1, 0)))
+    if roi.shape in ("point", "circle"):
+        return RegionOfInterest(
+            x=x,
+            y=y,
+            w=1,
+            h=1,
+            shape=roi.shape,
+            radius=max(1, roi.radius),
+        )
     w = max(0, min(roi.w, frame_w - x))
     h = max(0, min(roi.h, frame_h - y))
-    return RegionOfInterest(x=x, y=y, w=w, h=h)
+    return RegionOfInterest(x=x, y=y, w=w, h=h, shape=roi.shape, radius=roi.radius)
 
 
 def compute_hsv_bounds(target: TargetColor) -> list[tuple[np.ndarray, np.ndarray]]:
@@ -69,14 +78,23 @@ def compute_hsv_bounds(target: TargetColor) -> list[tuple[np.ndarray, np.ndarray
     ]
 
 
-def match_ratio(hsv_roi: np.ndarray, bounds: list[tuple[np.ndarray, np.ndarray]]) -> float:
+def match_ratio(
+    hsv_roi: np.ndarray,
+    bounds: list[tuple[np.ndarray, np.ndarray]],
+    region_mask: np.ndarray | None = None,
+) -> float:
     """Fraction (0..1) of ROI pixels that fall in any of the HSV bounds."""
     if hsv_roi.size == 0 or not bounds:
         return 0.0
-    mask = cv2.inRange(hsv_roi, bounds[0][0], bounds[0][1])
+    match_mask = cv2.inRange(hsv_roi, bounds[0][0], bounds[0][1])
     for lo, hi in bounds[1:]:
-        mask = cv2.bitwise_or(mask, cv2.inRange(hsv_roi, lo, hi))
-    return float(cv2.countNonZero(mask)) / float(mask.size)
+        match_mask = cv2.bitwise_or(match_mask, cv2.inRange(hsv_roi, lo, hi))
+    if region_mask is None:
+        return float(cv2.countNonZero(match_mask)) / float(match_mask.size)
+    area = cv2.countNonZero(region_mask)
+    if area == 0:
+        return 0.0
+    return float(cv2.countNonZero(cv2.bitwise_and(match_mask, region_mask))) / float(area)
 
 
 @dataclass
@@ -153,10 +171,29 @@ class Detector:
             processing_ms = (time.perf_counter() - t0) * 1000.0
             return DetectionResult(0.0, False, False, processing_ms, used_roi)
 
-        crop = frame_bgr[used_roi.y : used_roi.y + used_roi.h, used_roi.x : used_roi.x + used_roi.w]
+        region_mask = None
+        if used_roi.shape == "circle":
+            x0 = max(0, used_roi.x - used_roi.radius)
+            y0 = max(0, used_roi.y - used_roi.radius)
+            x1 = min(frame_w, used_roi.x + used_roi.radius + 1)
+            y1 = min(frame_h, used_roi.y + used_roi.radius + 1)
+            crop = frame_bgr[y0:y1, x0:x1]
+            region_mask = np.zeros(crop.shape[:2], dtype=np.uint8)
+            cv2.circle(
+                region_mask,
+                (used_roi.x - x0, used_roi.y - y0),
+                used_roi.radius,
+                255,
+                thickness=-1,
+            )
+        else:
+            crop = frame_bgr[
+                used_roi.y : used_roi.y + used_roi.h,
+                used_roi.x : used_roi.x + used_roi.w,
+            ]
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         bounds = compute_hsv_bounds(target)
-        ratio = match_ratio(hsv, bounds)
+        ratio = match_ratio(hsv, bounds, region_mask)
         is_match = ratio >= match_threshold
 
         should_fire = self.state.decide(is_match, now, confirm_frames, cooldown_ms)

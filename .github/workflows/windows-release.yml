@@ -29,7 +29,10 @@ jobs:
       - name: Build executable
         run: >-
           pyinstaller --noconfirm --clean --onefile --windowed
-          --name NotTriggerbot --collect-submodules pynput
+          --name NotTriggerbot
+          --hidden-import pynput.keyboard._win32
+          --hidden-import pynput.mouse._win32
+          --hidden-import pynput._util.win32
           --hidden-import pygrabber.dshow_graph main.py
 
       - name: Publish latest release

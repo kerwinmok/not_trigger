@@ -1,18 +1,16 @@
 {
   "camera_index": 0,
   "camera_name": "Example USB Camera",
-  "width": 1920,
-  "height": 1080,
-  "fps": 30,
+  "requested_fps": null,
   "brightness": null,
-  "contrast": null,
-  "saturation": null,
   "exposure": null,
   "roi": {
     "x": 820,
     "y": 440,
     "w": 240,
-    "h": 180
+    "h": 180,
+    "shape": "rectangle",
+    "radius": 20
   },
   "target_color": {
     "h": 0,

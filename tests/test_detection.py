@@ -1,8 +1,10 @@
 import numpy as np
 import pytest
+import cv2
 
 from nottrigger.config import RegionOfInterest, TargetColor
 from nottrigger.detection import (
+    Detector,
     EdgeTriggerState,
     clamp_roi_to_frame,
     compute_hsv_bounds,
@@ -63,6 +65,44 @@ def test_match_ratio_half_in_range():
     hsv[..., 2] = 150
     bounds = [(np.array([40, 100, 100], dtype=np.uint8), np.array([60, 200, 200], dtype=np.uint8))]
     assert match_ratio(hsv, bounds) == pytest.approx(0.5)
+
+
+def test_circle_match_ratio_ignores_pixels_outside_circle():
+    hsv = np.zeros((9, 9, 3), dtype=np.uint8)
+    hsv[..., :] = (50, 200, 200)
+    hsv[2:7, 2:7] = (0, 0, 0)
+    frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    target = TargetColor(h=50, s=200, v=200, h_tolerance=0, s_tolerance=0, v_tolerance=0, has_sample=True)
+
+    result = Detector().update(
+        frame,
+        RegionOfInterest(x=4, y=4, w=1, h=1, shape="circle", radius=2),
+        target,
+        match_threshold=0.01,
+        confirm_frames=1,
+        cooldown_ms=0,
+    )
+
+    assert result.match_ratio == pytest.approx(0.0)
+
+
+def test_point_region_checks_exactly_one_pixel():
+    hsv = np.zeros((5, 5, 3), dtype=np.uint8)
+    hsv[3, 2] = (50, 200, 200)
+    frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    target = TargetColor(h=50, s=200, v=200, h_tolerance=0, s_tolerance=0, v_tolerance=0, has_sample=True)
+
+    result = Detector().update(
+        frame,
+        RegionOfInterest(x=2, y=3, w=1, h=1, shape="point"),
+        target,
+        match_threshold=0.5,
+        confirm_frames=1,
+        cooldown_ms=0,
+    )
+
+    assert result.match_ratio == pytest.approx(1.0)
+    assert result.should_fire is True
 
 
 def test_edge_trigger_requires_confirm_frames():

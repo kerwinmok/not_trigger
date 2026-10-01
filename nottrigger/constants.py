@@ -12,19 +12,11 @@ APP_VERSION = "2.0.0"
 CONFIG_FILENAME = "config.json"
 LOG_FILENAME = "not_trigger.log"
 
-# (label, width, height). Order matters: shown top-to-bottom in the UI.
-RESOLUTION_PRESETS: list[tuple[str, int, int]] = [
-    ("480p (640x480)", 640, 480),
-    ("720p (1280x720)", 1280, 720),
-    ("1080p (1920x1080)", 1920, 1080),
-    ("4K UHD (3840x2160)", 3840, 2160),
-]
-
-FPS_PRESETS: list[int] = [15, 24, 30, 60]
-
 # Keep preview work small regardless of camera resolution and frame rate.
 CHEAP_PREVIEW_FPS = 12
 CHEAP_PREVIEW_MAX_WIDTH = 480
+LOW_CPU_PREVIEW_FPS = 2
+LOW_CPU_PREVIEW_MAX_WIDTH = 240
 
 # UI polls the camera worker for new stats/preview frames on this cadence,
 # independent of camera fps.
